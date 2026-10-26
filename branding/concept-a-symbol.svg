@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title-a">
+  <title id="title-a">Suarlog Concept A - The Acoustic Beam</title>
+  <!-- Background circular badge container -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#0f172a"/>
+  
+  <!-- Outer concentric audio waveform rings -->
+  <circle cx="128" cy="128" r="92" fill="none" stroke="#0284c7" stroke-width="12" stroke-linecap="round" stroke-dasharray="14 18"/>
+  <circle cx="128" cy="128" r="68" fill="none" stroke="#38bdf8" stroke-width="14" stroke-linecap="round" stroke-dasharray="28 20"/>
+  
+  <!-- Central core beacon / pulse lens -->
+  <circle cx="128" cy="128" r="38" fill="#38bdf8"/>
+  <circle cx="128" cy="128" r="16" fill="#ffffff"/>
+  
+  <!-- Precision radar cross-hairs -->
+  <line x1="128" y1="20" x2="128" y2="44" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="128" y1="212" x2="128" y2="236" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="20" y1="128" x2="44" y2="128" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="212" y1="128" x2="236" y2="128" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+</svg>

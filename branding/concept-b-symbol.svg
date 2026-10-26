@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title-b">
+  <title id="title-b">Suarlog Concept B - The Tele-Paperplane Sonic Wave</title>
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#0369a1"/>
+  
+  <!-- Left to right soundwave bars -->
+  <rect x="36" y="104" width="12" height="48" rx="6" fill="#ffffff" opacity="0.6"/>
+  <rect x="56" y="80" width="12" height="96" rx="6" fill="#ffffff" opacity="0.8"/>
+  <rect x="76" y="56" width="12" height="144" rx="6" fill="#ffffff"/>
+  
+  <!-- Telegram dynamic paper plane morphing forward -->
+  <path fill="#ffffff" fill-rule="evenodd" d="M 104 128 L 220 56 L 152 208 L 132 152 L 104 128 Z"/>
+  <path fill="#0284c7" d="M 132 152 L 180 96 L 144 144 Z"/>
+</svg>

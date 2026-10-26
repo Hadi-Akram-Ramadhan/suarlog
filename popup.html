@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Suarlog AI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="logo-group">
+      <span class="status-indicator" id="headerStatusDot" aria-hidden="true"></span>
+      <h1 class="brand-title">Suarlog AI</h1>
+    </div>
+    <span class="version-tag">MV3</span>
+  </header>
+
+  <nav class="tab-nav" role="tablist" aria-label="Menu Navigasi">
+    <button class="tab-btn active" role="tab" id="tabBtnMonitor" aria-selected="true" aria-controls="tabMonitor" data-tab="tabMonitor">Monitor</button>
+    <button class="tab-btn" role="tab" id="tabBtnGallery" aria-selected="false" aria-controls="tabGallery" data-tab="tabGallery">Tangkapan</button>
+    <button class="tab-btn" role="tab" id="tabBtnTranscript" aria-selected="false" aria-controls="tabTranscript" data-tab="tabTranscript">Transkrip</button>
+    <button class="tab-btn" role="tab" id="tabBtnSettings" aria-selected="false" aria-controls="tabSettings" data-tab="tabSettings">Pengaturan</button>
+  </nav>
+
+  <main class="main-content">
+    <!-- PANEL 1: MONITOR -->
+    <section id="tabMonitor" class="tab-panel active" role="tabpanel" aria-labelledby="tabBtnMonitor">
+      <div class="card status-card">
+        <div class="status-row">
+          <span class="label">Status Sesi:</span>
+          <span class="status-pill" id="sessionStatusPill">Standby</span>
+        </div>
+        <div class="status-row">
+          <span class="label">Durasi:</span>
+          <span class="value-text" id="durationText">00:00:00</span>
+        </div>
+        <div class="status-row">
+          <span class="label">Slide Terdeteksi:</span>
+          <span class="value-text" id="slideCountText">0</span>
+        </div>
+      </div>
+
+      <div class="action-box">
+        <button id="btnToggleRecord" class="btn btn-primary btn-block">Mulai Monitor Meeting</button>
+        <button id="btnInstantCapture" class="btn btn-secondary btn-block" disabled>Ambil Tangkapan Layar Sekarang</button>
+        <button id="btnAnalyzeSummary" class="btn btn-accent btn-block" disabled>Analisis Keseluruhan Meeting</button>
+      </div>
+
+      <div class="card preview-card">
+        <div class="card-header">
+          <h2 class="card-title">Tangkapan Layar Terakhir</h2>
+          <span class="timestamp" id="lastCaptureTime">Belum ada</span>
+        </div>
+        <div class="preview-box" id="previewContainer">
+          <div class="empty-state" id="emptyPreviewMsg">Belum ada tangkapan layar. Mulai monitor untuk mendeteksi slide.</div>
+          <img id="latestScreenshotImg" class="preview-img hidden" alt="Pratinjau slide meeting terakhir">
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 2: GALLERY TANGKAPAN LAYAR -->
+    <section id="tabGallery" class="tab-panel" role="tabpanel" aria-labelledby="tabBtnGallery">
+      <div class="panel-header-row">
+        <h2 class="card-title">Daftar Tangkapan Layar (<span id="galleryCount">0</span>)</h2>
+        <button id="btnClearGallery" class="btn btn-ghost btn-sm">Bersihkan</button>
+      </div>
+      <div class="gallery-grid" id="galleryGrid">
+        <div class="empty-state">Belum ada tangkapan slide tersimpan.</div>
+      </div>
+    </section>
+
+    <!-- PANEL 3: TRANSKRIP & ANALISIS -->
+    <section id="tabTranscript" class="tab-panel" role="tabpanel" aria-labelledby="tabBtnTranscript">
+      <div class="panel-header-row">
+        <h2 class="card-title">Transkrip & Analisis Live</h2>
+        <button id="btnCopyTranscript" class="btn btn-ghost btn-sm">Salin Semua</button>
+      </div>
+      <div class="transcript-feed" id="transcriptFeed">
+        <div class="empty-state">Belum ada log transkrip. Jalankan monitor untuk menangkap ucapan dan presentasi.</div>
+      </div>
+    </section>
+
+    <!-- PANEL 4: PENGATURAN -->
+    <section id="tabSettings" class="tab-panel" role="tabpanel" aria-labelledby="tabBtnSettings">
+      <form id="settingsForm" class="settings-form">
+        <!-- Section Telegram -->
+        <fieldset class="form-fieldset">
+          <legend class="fieldset-legend">Pengaturan Telegram</legend>
+          <div class="form-group">
+            <label for="teleBotToken">Bot Token Telegram:</label>
+            <input type="password" id="teleBotToken" name="teleBotToken" placeholder="Masukkan token bot Telegram Anda" autocomplete="off">
+            <small class="field-hint">Token bot dari @BotFather. Disimpan lokal di storage browser perangkat Anda.</small>
+          </div>
+          <div class="form-group">
+            <label for="teleChatId">Chat ID / Kontak Telegram Anda:</label>
+            <input type="text" id="teleChatId" name="teleChatId" placeholder="Contoh: 949694019">
+            <small class="field-hint">Dapatkan Chat ID Anda via @userinfobot di Telegram.</small>
+          </div>
+          <button type="button" id="btnTestTele" class="btn btn-secondary btn-sm">Kirim Tes Notifikasi Telegram</button>
+        </fieldset>
+
+        <!-- Section AI Endpoint & Model -->
+        <fieldset class="form-fieldset">
+          <legend class="fieldset-legend">Pengaturan AI Model (OpenAI / 9Router)</legend>
+          <div class="form-group">
+            <label for="aiBaseUrl">API Endpoint Base URL:</label>
+            <input type="url" id="aiBaseUrl" name="aiBaseUrl" value="http://localhost:20128/v1" placeholder="http://localhost:20128/v1">
+          </div>
+          <div class="form-group">
+            <label for="aiApiKey">API Key:</label>
+            <input type="password" id="aiApiKey" name="aiApiKey" placeholder="sk-..." autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="aiModel">Pilihan Model AI:</label>
+            <input type="text" id="aiModel" name="aiModel" value="ag/gemini-3.8-flash-high" placeholder="ag/gemini-3.8-flash-high atau openai/gpt-4o">
+          </div>
+        </fieldset>
+
+        <!-- Section Analisis Customization -->
+        <fieldset class="form-fieldset">
+          <legend class="fieldset-legend">Preferensi Mode Analisis</legend>
+          <div class="form-group">
+            <label for="analysisMode">Mode Analisis:</label>
+            <select id="analysisMode" name="analysisMode">
+              <option value="detailed">Sangat Detail (Verbatim + Bedah Poin + Action Items)</option>
+              <option value="concise">Ringkas Padat (Poin Inti & Keputusan Penting)</option>
+              <option value="academic">Struktur Kuliah/Bootcamp (Materi, Q&A, Referensi)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="sendSlideToTele">Kirim Gambar Slide ke Telegram:</label>
+            <select id="sendSlideToTele" name="sendSlideToTele">
+              <option value="true">Ya, kirim foto slide dan transkrip</option>
+              <option value="false">Hanya transkrip teks (hemat data)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="autoSummaryInterval">Interval Update Otomatis (detik):</label>
+            <input type="number" id="autoSummaryInterval" name="autoSummaryInterval" value="60" min="20" max="300">
+          </div>
+        </fieldset>
+
+        <div class="form-action-row">
+          <button type="submit" id="btnSaveSettings" class="btn btn-primary">Simpan Pengaturan</button>
+          <span id="saveNotice" class="save-notice hidden" role="status">Tersimpan</span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span class="footer-note">Suarlog AI terintegrasi Chrome MV3</span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
