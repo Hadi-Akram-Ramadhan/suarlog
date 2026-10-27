@@ -78,6 +78,15 @@
       return true;
     }
 
+    if (req.action === "STOP_OBSERVING") {
+      if (captionObserver) {
+        captionObserver.disconnect();
+        captionObserver = null;
+      }
+      sendResponse({ success: true });
+      return true;
+    }
+
     if (req.action === "CAPTURE_VIDEO_FRAME") {
       const vid = detectPresentationVideo();
       if (!vid) {
@@ -100,6 +109,5 @@
     }
   });
 
-  // Automatically start observing captions if page is already open
-  startCaptionObserver();
+  // Observer will be activated only when monitoring starts via START_OBSERVING message
 })();

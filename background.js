@@ -6,6 +6,11 @@ let lastImageThumbData = null;
 
 // Default initial state
 chrome.runtime.onInstalled.addListener(async () => {
+  // Restrict chrome.storage.local access to extension's trusted contexts (background/popup)
+  // preventing injected content scripts from reading sensitive API keys / Telegram tokens.
+  if (chrome.storage.local.setAccessLevel) {
+    chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
+  }
   const current = await chrome.storage.local.get([
     "teleBotToken",
     "teleChatId",
@@ -366,6 +371,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         clearInterval(monitorIntervalId);
         monitorIntervalId = null;
       }
+      if (activeTabId) {
+        chrome.tabs.sendMessage(activeTabId, { action: "STOP_OBSERVING" }).catch(() => {});
+        activeTabId = null;
+      }
       await chrome.storage.local.set({ isRecording: false });
 
       // Send finish notification to Telegram
@@ -391,8 +400,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // 4. Instant Capture
   if (req.action === "TRIGGER_INSTANT_CAPTURE") {
     (async () => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const targetId = tab ? tab.id : activeTabId;
+      const targetId = activeTabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
       const shot = await performCapture(targetId, true);
       sendResponse({ success: Boolean(shot) });
     })();
@@ -415,6 +423,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // 6. Inbound Live Caption from Content Script
   if (req.action === "NEW_CAPTION_TEXT") {
     (async () => {
+      const { isRecording } = await chrome.storage.local.get("isRecording");
+      if (!isRecording) {
+        sendResponse({ success: false, error: "Not recording" });
+        return;
+      }
+      if (!sender.tab || sender.tab.id !== activeTabId) {
+        sendResponse({ success: false, error: "Sender tab is not active meeting session" });
+        return;
+      }
       const { transcripts } = await chrome.storage.local.get("transcripts");
       const tList = transcripts || [];
       tList.push({
