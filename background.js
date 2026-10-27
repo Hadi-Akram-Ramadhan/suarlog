@@ -169,8 +169,54 @@ async function callAICompletion(messages, maxTokens = 1500) {
   }
 
   const json = await resp.json();
-  return json.choices?.[0]?.message?.content || "";
+  const choice = json.choices?.[0];
+  let text = choice?.message?.content || "";
+
+  // If output token limit was reached, append indicator or continue
+  if (choice?.finish_reason === "length") {
+    console.warn("[Suarlog AI] Output truncated due to model max_tokens length, requesting continuation...");
+    try {
+      const continuationMessages = [
+        ...messages,
+        { role: "assistant", content: text },
+        { role: "user", content: "Lanjutkan persis dari kata terakhir di atas sampai kalimat selesai secara utuh." }
+      ];
+      const contPayload = { model, messages: continuationMessages, max_tokens: 1500, stream: false };
+      const contResp = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(contPayload) });
+      if (contResp.ok) {
+        const contJson = await contResp.json();
+        const contText = contJson.choices?.[0]?.message?.content || "";
+        if (contText) text += " " + contText.trim();
+      }
+    } catch (_) {}
+  }
+  return text;
 }
+
+// Sequential transcript write queue to eliminate storage race condition overwrites
+let transcriptSaveQueue = Promise.resolve();
+function appendTranscript(speaker, text, timestamp = Date.now()) {
+  if (!text || text.trim().length === 0) return Promise.resolve();
+  transcriptSaveQueue = transcriptSaveQueue.then(async () => {
+    try {
+      const { transcripts } = await chrome.storage.local.get("transcripts");
+      const list = transcripts || [];
+      list.push({
+        speaker: speaker,
+        timestamp: timestamp,
+        text: text.trim()
+      });
+      if (list.length > 500) list.shift();
+      await chrome.storage.local.set({ transcripts: list });
+    } catch (err) {
+      console.error("[Suarlog AI] Error appending transcript:", err);
+    }
+  });
+  return transcriptSaveQueue;
+}
+
+// Sequential speech audio chunk processing queue
+let audioProcessQueue = Promise.resolve();
 
 // Compare two image thumbnails
 function isSlideDifferent(dataUrlA, dataUrlB) {
@@ -236,15 +282,8 @@ async function performCapture(tabId, isManual = false, forcedDataUrl = null) {
       try {
         const explanation = await callAICompletion(aiMessages, 1000);
 
-        // Store into transcripts feed
-        const { transcripts } = await chrome.storage.local.get("transcripts");
-        const tList = transcripts || [];
-        tList.push({
-          speaker: `Slide #${slideNum} (Visual)`,
-          timestamp: Date.now(),
-          text: explanation
-        });
-        await chrome.storage.local.set({ transcripts: tList });
+        // Store into transcripts feed via serialized queue
+        await appendTranscript(`Slide #${slideNum} (Visual)`, explanation, Date.now());
 
         // Push to Telegram if configured
         const effectiveToken = await getEffectiveTelegramToken();
@@ -419,13 +458,17 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         monitorIntervalId = null;
       }
       if (activeTabId) {
-        chrome.tabs.sendMessage(activeTabId, { action: "STOP_OBSERVING" }).catch(() => {});
+        await chrome.tabs.sendMessage(activeTabId, { action: "STOP_OBSERVING" }).catch(() => {});
         activeTabId = null;
       }
 
-      // Stop audio recording and close offscreen document cleanly
-      chrome.runtime.sendMessage({ target: "offscreen", action: "STOP_AUDIO" }).catch(() => {});
-      chrome.offscreen.closeDocument().catch(() => {});
+      // Stop audio recording and wait for offscreen to flush final speech chunk
+      try {
+        await chrome.runtime.sendMessage({ target: "offscreen", action: "STOP_AUDIO" });
+      } catch (_) {}
+      // Wait for any queued audio transcriptions to finish before closing document
+      await audioProcessQueue.catch(() => {});
+      await chrome.offscreen.closeDocument().catch(() => {});
 
       await chrome.storage.local.set({ isRecording: false });
 
@@ -476,24 +519,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === "NEW_CAPTION_TEXT") {
     (async () => {
       const { isRecording } = await chrome.storage.local.get("isRecording");
-      if (!isRecording) {
+      if (!isRecording && !req.isFinal) {
         sendResponse({ success: false, error: "Not recording" });
         return;
       }
-      if (!sender.tab || sender.tab.id !== activeTabId) {
+      if (sender.tab && activeTabId && sender.tab.id !== activeTabId) {
         sendResponse({ success: false, error: "Sender tab is not active meeting session" });
         return;
       }
-      const { transcripts } = await chrome.storage.local.get("transcripts");
-      const tList = transcripts || [];
-      tList.push({
-        speaker: req.speaker || "Percakapan Meeting",
-        timestamp: req.timestamp || Date.now(),
-        text: req.text
-      });
-      // Cap at 200 items in storage
-      if (tList.length > 200) tList.shift();
-      await chrome.storage.local.set({ transcripts: tList });
+      await appendTranscript(req.speaker || "Percakapan Meeting", req.text, req.timestamp || Date.now());
       sendResponse({ success: true });
     })();
     return true;
@@ -502,57 +536,67 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // 7. Inbound Continuous Speech Audio Chunk from Offscreen Worker
   if (req.action === "NEW_AUDIO_SPEECH_CHUNK") {
     (async () => {
-      const { isRecording, analysisMode } = await chrome.storage.local.get(["isRecording", "analysisMode"]);
-      if (!isRecording || !req.wavBase64) return;
-
-      console.log(`[Suarlog AI] Transcribing speech chunk (${req.durationSec.toFixed(1)}s)...`);
-
-      const promptMode = analysisMode === "concise"
-        ? "Transkripsikan intisari percakapan ini secara ringkas, padat, dan jelas per pembicara."
-        : "Kamu adalah transcriber audio meeting profesional. Transkripsikan seluruh percakapan audio ini secara LENGKAP, DETAIL, dan VERBATIM (KATA PER KATA APA ADANYA). Format rapi dengan label pembicara (misal: Pembicara 1, Pembicara 2, atau nama jika terdengar). DILARANG MENYINGKAT atau MERANGKUM perkataan pembicara. Catat setiap istilah teknis, pertanyaan, dan instruksi.";
-
-      const aiMessages = [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: `${promptMode}\nGunakan bahasa Indonesia yang jelas dan profesional.` },
-            {
-              type: "input_audio",
-              input_audio: {
-                data: req.wavBase64,
-                format: "wav"
-              }
-            }
-          ]
-        }
-      ];
-
-      try {
-        const verbatimText = await callAICompletion(aiMessages, 1500);
-        if (verbatimText && verbatimText.trim().length > 3) {
-          const { transcripts, teleChatId } = await chrome.storage.local.get(["transcripts", "teleChatId"]);
-          const tList = transcripts || [];
-          tList.push({
-            speaker: "Percakapan Audio Live",
-            timestamp: req.timestamp || Date.now(),
-            text: verbatimText.trim()
-          });
-          if (tList.length > 300) tList.shift();
-          await chrome.storage.local.set({ transcripts: tList });
-
-          // Send to Telegram
-          const effectiveToken = await getEffectiveTelegramToken();
-          if (effectiveToken && teleChatId) {
-            await sendTelegramMessage(
-              effectiveToken,
-              teleChatId,
-              `🎙️ *Transkrip Audio Live*:\n\n${verbatimText.trim()}`
-            );
-          }
-        }
-      } catch (err) {
-        console.error("[Suarlog AI] Error transcribing speech chunk:", err);
+      const { isRecording } = await chrome.storage.local.get("isRecording");
+      if (!isRecording && !req.isFinal) {
+        sendResponse({ success: false, error: "Not recording and not final" });
+        return;
       }
+      if (!req.wavBase64) {
+        sendResponse({ success: false, error: "Empty audio payload" });
+        return;
+      }
+
+      // Enqueue speech transcription sequentially to avoid AI concurrency limits and race conditions
+      audioProcessQueue = audioProcessQueue.then(async () => {
+        console.log(`[Suarlog AI] Transcribing speech chunk (${req.durationSec?.toFixed(1) || "?"}s, isFinal: ${Boolean(req.isFinal)})...`);
+
+        const verbatimPrompt = (
+          "Kamu adalah transcriber audio meeting profesional dan sangat teliti.\n" +
+          "TUGAS UTAMA: Tuliskan transkrip percakapan audio ini secara LENGKAP, DETAIL, UTUH, dan VERBATIM (KATA PER KATA APA ADANYA).\n" +
+          "- JANGAN PERNAH meringkas, menyingkat, atau menghilangkan kata/kalimat apa pun yang diucapkan pembicara.\n" +
+          "- Tuliskan seluruh percakapan dalam bentuk dialog rapi. Berikan label pembicara (misal: Pembicara 1, Pembicara 2, atau nama jika terdengar jelas).\n" +
+          "- Catat setiap istilah teknis, pertanyaan, jawaban, angka, instruksi, dan diskusi secara persis seperti aslinya."
+        );
+
+        const aiMessages = [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: `${verbatimPrompt}\nGunakan bahasa Indonesia yang jelas dan akurat.` },
+              {
+                type: "input_audio",
+                input_audio: {
+                  data: req.wavBase64,
+                  format: "wav"
+                }
+              }
+            ]
+          }
+        ];
+
+        try {
+          const verbatimText = await callAICompletion(aiMessages, 4000);
+          if (verbatimText && verbatimText.trim().length > 3) {
+            await appendTranscript("Percakapan Audio Live", verbatimText.trim(), req.timestamp || Date.now());
+
+            // Send to Telegram
+            const effectiveToken = await getEffectiveTelegramToken();
+            const { teleChatId } = await chrome.storage.local.get("teleChatId");
+            if (effectiveToken && teleChatId) {
+              await sendTelegramMessage(
+                effectiveToken,
+                teleChatId,
+                `🎙️ *Transkrip Audio Live*:\n\n${verbatimText.trim()}`
+              );
+            }
+          }
+        } catch (err) {
+          console.error("[Suarlog AI] Error transcribing speech chunk:", err);
+        }
+      });
+
+      await audioProcessQueue;
+      sendResponse({ success: true });
     })();
     return true;
   }

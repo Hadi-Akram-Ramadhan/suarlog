@@ -1,4 +1,4 @@
-# Suarlog AI - Chrome Extension (v1.1.0)
+# Suarlog AI - Chrome Extension (v1.2.0)
 
 Ekstensi Chrome cerdas untuk monitoring live meeting (Google Meet, Zoom Web, Microsoft Teams), menangkap transkrip otomatis secara real-time dari audio tab langsung (tanpa mematikan suara headset/TWS), deteksi otomatis perubahan slide presentasi, analisis AI mendalam, serta integrasi langsung ke Bot Telegram pribadi Anda.
 

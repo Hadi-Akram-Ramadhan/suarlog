@@ -45,15 +45,24 @@
         meetCaptions.forEach(el => {
           const speakerEl = el.closest(".nMxEZc")?.querySelector(".zs7LEd, .NWad4c") 
                          || el.parentElement?.querySelector(".zs7LEd");
-          const speakerName = speakerEl?.textContent?.trim();
+          const speakerName = speakerEl?.textContent?.trim() || activeSpeaker;
           const text = el.textContent?.trim();
 
           if (text && text.length > 2) {
-            if (speakerName && speakerName !== activeSpeaker) {
+            if (speakerName !== activeSpeaker) {
               flushCaptionBuffer();
               activeSpeaker = speakerName;
+              speechBuffer = text;
+            } else {
+              // If incoming text is an extension of current buffer, update it
+              if (text.startsWith(speechBuffer)) {
+                speechBuffer = text;
+              } else if (!speechBuffer.endsWith(text) && !speechBuffer.includes(text)) {
+                // If previous sentence completed in DOM, flush old and append new
+                flushCaptionBuffer();
+                speechBuffer = text;
+              }
             }
-            speechBuffer = text;
             clearTimeout(finalizeCaptionTimer);
             finalizeCaptionTimer = setTimeout(flushCaptionBuffer, 2200);
           }
@@ -66,15 +75,22 @@
         zoomCaptions.forEach(el => {
           const speakerEl = el.closest(".caption-window")?.querySelector(".caption-speaker")
                          || el.querySelector("b, strong");
-          const speakerName = speakerEl?.textContent?.replace(":", "")?.trim();
+          const speakerName = speakerEl?.textContent?.replace(":", "")?.trim() || activeSpeaker;
           const text = el.textContent?.replace(speakerEl?.textContent || "", "").trim();
 
           if (text && text.length > 2) {
-            if (speakerName && speakerName !== activeSpeaker) {
+            if (speakerName !== activeSpeaker) {
               flushCaptionBuffer();
               activeSpeaker = speakerName;
+              speechBuffer = text;
+            } else {
+              if (text.startsWith(speechBuffer)) {
+                speechBuffer = text;
+              } else if (!speechBuffer.endsWith(text) && !speechBuffer.includes(text)) {
+                flushCaptionBuffer();
+                speechBuffer = text;
+              }
             }
-            speechBuffer = text;
             clearTimeout(finalizeCaptionTimer);
             finalizeCaptionTimer = setTimeout(flushCaptionBuffer, 2200);
           }
@@ -91,6 +107,9 @@
         });
         combined = combined.trim();
         if (combined.length > 3 && combined !== speechBuffer) {
+          if (!combined.startsWith(speechBuffer)) {
+            flushCaptionBuffer();
+          }
           speechBuffer = combined;
           clearTimeout(finalizeCaptionTimer);
           finalizeCaptionTimer = setTimeout(flushCaptionBuffer, 2200);

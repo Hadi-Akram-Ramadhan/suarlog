@@ -11,6 +11,8 @@ let speechCheckInterval = null;
 let speechSecAccumulated = 0;
 let silenceSecAccumulated = 0;
 const SAMPLE_RATE = 16000;
+const PEAK_VOICE_THRESHOLD = 140;
+const RMS_VOICE_THRESHOLD = 18;
 let recentPeak = 0;
 
 // Fast in-memory 16kHz Mono WAV encoder
@@ -141,7 +143,7 @@ async function startAudioCapture(streamId) {
     speechCheckInterval = setInterval(() => {
       if (!isRecording) return;
 
-      const hasRecentSpeech = recentPeak > 350;
+      const hasRecentSpeech = recentPeak >= PEAK_VOICE_THRESHOLD;
       recentPeak = 0; // reset for next 1s window
 
       if (hasRecentSpeech) {
@@ -151,14 +153,15 @@ async function startAudioCapture(streamId) {
         silenceSecAccumulated += 1;
       }
 
-      // Whenever someone talks:
-      // Condition 1: Spoke for >= 15 seconds and paused for >= 2 seconds (natural sentence/thought pause)
-      // Condition 2: Continuous monologue without pauses reached 40 seconds
+      // A wall-clock bound also sends quiet speech that never crosses the VAD threshold.
+      const bufferedSamples = pcmSamples.reduce((n, samples) => n + samples.length, 0);
       if (
-        (speechSecAccumulated >= 15 && silenceSecAccumulated >= 2) ||
-        speechSecAccumulated >= 40
+        (speechSecAccumulated >= 1 && silenceSecAccumulated >= 2) ||
+        bufferedSamples >= SAMPLE_RATE * 18
       ) {
-        flushSpeechChunk();
+        flushSpeechChunk().catch(err => console.error("Audio dispatch failed:", err));
+      } else if (silenceSecAccumulated >= 2 && bufferedSamples > SAMPLE_RATE) {
+        flushSpeechChunk().catch(err => console.error("Audio dispatch failed:", err));
       }
     }, 1000);
 
@@ -179,24 +182,26 @@ async function startAudioCapture(streamId) {
 }
 
 // Flush accumulated speech buffer to background worker for verbatim AI transcription
-function flushSpeechChunk() {
+async function flushSpeechChunk(isFinal = false) {
   if (pcmSamples.length === 0) return;
 
   let totalLen = 0;
   for (let i = 0; i < pcmSamples.length; i++) {
     totalLen += pcmSamples[i].length;
   }
-  
+
+  // Minimum ~0.4s audio required if final, or ~0.8s during active recording
+  const minRequired = isFinal ? (SAMPLE_RATE * 0.4) : (SAMPLE_RATE * 0.8);
+  if (totalLen < minRequired) {
+    return;
+  }
+
   const merged = new Int16Array(totalLen);
   let offset = 0;
   for (let i = 0; i < pcmSamples.length; i++) {
     merged.set(pcmSamples[i], offset);
     offset += pcmSamples[i].length;
   }
-  
-  pcmSamples = [];
-  speechSecAccumulated = 0;
-  silenceSecAccumulated = 0;
 
   // Calculate energy
   let maxAmp = 0;
@@ -208,26 +213,52 @@ function flushSpeechChunk() {
   }
   const rms = Math.sqrt(sumSq / merged.length);
 
-  // Require real voice presence (discard silence or faint room hiss)
-  if (maxAmp < 350 || rms < 45 || totalLen < (SAMPLE_RATE * 0.8)) {
+  // Discard pure digital silence (mic off / zero tab audio)
+  if (maxAmp < PEAK_VOICE_THRESHOLD && rms < RMS_VOICE_THRESHOLD) {
+    if (silenceSecAccumulated > 10 || isFinal) {
+      pcmSamples = [];
+      speechSecAccumulated = 0;
+    }
     return;
   }
 
-  // Cap to max 90s to keep payload responsive and avoid timeout
-  let finalSamples = merged;
-  if (merged.length > SAMPLE_RATE * 90) {
-    finalSamples = merged.subarray(merged.length - (SAMPLE_RATE * 90));
+  // If buffer is larger than 45 seconds, take first 45s (head) to transcribe
+  // and keep remaining tail in pcmSamples so ZERO speech is ever discarded!
+  const MAX_CHUNK_SAMPLES = SAMPLE_RATE * 45;
+  const OVERLAP_SAMPLES = 8000; // 0.5s overlap to preserve words on boundary
+  let chunkToSend;
+
+  if (merged.length > MAX_CHUNK_SAMPLES && !isFinal) {
+    chunkToSend = merged.subarray(0, MAX_CHUNK_SAMPLES);
+    const remaining = merged.subarray(MAX_CHUNK_SAMPLES - OVERLAP_SAMPLES);
+    pcmSamples = [new Int16Array(remaining)];
+  } else {
+    chunkToSend = merged;
+    if (merged.length > OVERLAP_SAMPLES && !isFinal) {
+      const overlap = merged.subarray(merged.length - OVERLAP_SAMPLES);
+      pcmSamples = [new Int16Array(overlap)];
+    } else {
+      pcmSamples = [];
+    }
   }
 
-  const wavB64 = encodeWav(finalSamples, SAMPLE_RATE);
-  console.log(`[Suarlog Offscreen] Dispatching speech chunk (${(totalLen / SAMPLE_RATE).toFixed(1)}s, peak: ${maxAmp})`);
+  speechSecAccumulated = 0;
+  silenceSecAccumulated = 0;
 
-  chrome.runtime.sendMessage({
-    action: "NEW_AUDIO_SPEECH_CHUNK",
-    wavBase64: wavB64,
-    durationSec: totalLen / SAMPLE_RATE,
-    timestamp: Date.now()
-  }).catch(() => {});
+  const wavB64 = encodeWav(chunkToSend, SAMPLE_RATE);
+  console.log(`[Suarlog Offscreen] Dispatching speech chunk (${(chunkToSend.length / SAMPLE_RATE).toFixed(1)}s, peak: ${maxAmp}, rms: ${rms.toFixed(1)}, isFinal: ${isFinal})`);
+
+  try {
+    await chrome.runtime.sendMessage({
+      action: "NEW_AUDIO_SPEECH_CHUNK",
+      wavBase64: wavB64,
+      durationSec: chunkToSend.length / SAMPLE_RATE,
+      isFinal: isFinal,
+      timestamp: Date.now()
+    });
+  } catch (err) {
+    console.warn("[Suarlog Offscreen] Error sending speech chunk:", err);
+  }
 }
 
 // Stop audio capture
@@ -237,8 +268,8 @@ async function stopAudioCapture() {
     clearInterval(speechCheckInterval);
     speechCheckInterval = null;
   }
-  // Flush any final spoken words before stopping
-  flushSpeechChunk();
+  // Flush any final spoken words and wait for completion before destroying context
+  await flushSpeechChunk(true);
 
   if (processorNode) {
     processorNode.disconnect();
@@ -257,55 +288,6 @@ async function stopAudioCapture() {
   return { success: true };
 }
 
-// Get accumulated audio slice and reset buffer for next slide
-function getAudioSlice(reset = true) {
-  if (pcmSamples.length === 0) return null;
-  
-  let totalLen = 0;
-  for (let i = 0; i < pcmSamples.length; i++) {
-    totalLen += pcmSamples[i].length;
-  }
-  
-  const merged = new Int16Array(totalLen);
-  let offset = 0;
-  for (let i = 0; i < pcmSamples.length; i++) {
-    merged.set(pcmSamples[i], offset);
-    offset += pcmSamples[i].length;
-  }
-  
-  if (reset) {
-    pcmSamples = [];
-  }
-
-  // Calculate audio energy (peak and RMS)
-  let maxAmp = 0;
-  let sumSq = 0;
-  for (let i = 0; i < merged.length; i++) {
-    const abs = Math.abs(merged[i]);
-    if (abs > maxAmp) maxAmp = abs;
-    sumSq += merged[i] * merged[i];
-  }
-  const rms = Math.sqrt(sumSq / merged.length);
-
-  // If audio is dead silence, return empty
-  if (maxAmp < 300 && rms < 50) {
-    return { hasSound: false, wavBase64: null, durationSec: totalLen / SAMPLE_RATE };
-  }
-
-  // Cap to max recent 90 seconds (16000 * 90 samples) for lightweight API payload
-  let finalSamples = merged;
-  if (merged.length > 16000 * 90) {
-    finalSamples = merged.subarray(merged.length - (16000 * 90));
-  }
-
-  const wavB64 = encodeWav(finalSamples, SAMPLE_RATE);
-  return {
-    hasSound: true,
-    wavBase64: wavB64,
-    durationSec: totalLen / SAMPLE_RATE
-  };
-}
-
 // Handle runtime messages from background service worker
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.target !== "offscreen") return;
@@ -317,12 +299,6 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === "STOP_AUDIO") {
     stopAudioCapture().then(sendResponse);
-    return true;
-  }
-
-  if (req.action === "GET_AUDIO_SLICE") {
-    const slice = getAudioSlice(req.reset !== false);
-    sendResponse({ success: true, slice });
     return true;
   }
 });
