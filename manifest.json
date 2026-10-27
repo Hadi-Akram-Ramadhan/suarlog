@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Suarlog AI - Live Meeting Monitor & Telegram Sync",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Live meeting monitor (Google Meet, Zoom Web, Teams): automated slide capture, real-time live caption sync, AI multimodal analysis & Telegram Bot integration.",
   "permissions": [
     "activeTab",
     "tabCapture",
     "storage",
-    "notifications"
+    "notifications",
+    "offscreen"
   ],
   "host_permissions": [
     "https://api.telegram.org/*",

@@ -53,48 +53,109 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
-  // Load Settings
-  async function loadSettings() {
-    const data = await chrome.storage.local.get([
-      "teleBotToken",
-      "teleChatId",
-      "aiBaseUrl",
-      "aiApiKey",
-      "aiModel",
-      "analysisMode",
-      "sendSlideToTele",
-      "autoSummaryInterval"
-    ]);
+  // Default configuration fallback
+  const DEFAULTS = {
+    teleBotToken: "",
+    teleChatId: "949694019",
+    aiBaseUrl: "http://localhost:20128/v1",
+    aiApiKey: "",
+    aiModel: "ag/gemini-3.8-flash-high",
+    analysisMode: "detailed",
+    sendSlideToTele: true,
+    autoSummaryInterval: 60
+  };
 
-    if (data.teleBotToken) teleBotTokenInput.value = data.teleBotToken;
-    if (data.teleChatId) teleChatIdInput.value = data.teleChatId;
-    if (data.aiBaseUrl) aiBaseUrlInput.value = data.aiBaseUrl;
-    if (data.aiApiKey) aiApiKeyInput.value = data.aiApiKey;
-    if (data.aiModel) aiModelInput.value = data.aiModel;
-    if (data.analysisMode) analysisModeSelect.value = data.analysisMode;
-    if (data.sendSlideToTele !== undefined) sendSlideToTeleSelect.value = String(data.sendSlideToTele);
-    if (data.autoSummaryInterval) autoSummaryIntervalInput.value = data.autoSummaryInterval;
+  // Load Settings from chrome.storage.local and local config seed
+  async function loadSettings() {
+    let localFileConfig = {};
+    try {
+      const res = await fetch(chrome.runtime.getURL("config.local.json"));
+      if (res.ok) {
+        localFileConfig = await res.json();
+      }
+    } catch (_) {}
+
+    const data = await chrome.storage.local.get(Object.keys(DEFAULTS));
+
+    const getVal = (key) => {
+      if (data[key] !== undefined && data[key] !== "") return data[key];
+      if (localFileConfig[key] !== undefined && localFileConfig[key] !== "") return localFileConfig[key];
+      return DEFAULTS[key];
+    };
+
+    teleBotTokenInput.value = getVal("teleBotToken") || "";
+    teleChatIdInput.value = getVal("teleChatId") || "";
+    aiBaseUrlInput.value = getVal("aiBaseUrl") || "";
+    aiApiKeyInput.value = getVal("aiApiKey") || "";
+    aiModelInput.value = getVal("aiModel") || "";
+    analysisModeSelect.value = getVal("analysisMode");
+    sendSlideToTeleSelect.value = String(getVal("sendSlideToTele"));
+    autoSummaryIntervalInput.value = getVal("autoSummaryInterval");
+
+    // Sync values into chrome.storage.local so they are permanently saved
+    const merged = {
+      teleBotToken: teleBotTokenInput.value.trim(),
+      teleChatId: teleChatIdInput.value.trim(),
+      aiBaseUrl: aiBaseUrlInput.value.trim(),
+      aiApiKey: aiApiKeyInput.value.trim(),
+      aiModel: aiModelInput.value.trim(),
+      analysisMode: analysisModeSelect.value,
+      sendSlideToTele: sendSlideToTeleSelect.value === "true",
+      autoSummaryInterval: parseInt(autoSummaryIntervalInput.value, 10)
+    };
+    await chrome.storage.local.set(merged);
   }
 
-  // Save Settings
-  settingsForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
+  // Auto-Save helper function
+  let saveDebounceTimer = null;
+  async function autoSaveConfig(showIndicator = true) {
     const config = {
       teleBotToken: teleBotTokenInput.value.trim(),
       teleChatId: teleChatIdInput.value.trim(),
-      aiBaseUrl: aiBaseUrlInput.value.trim() || "http://localhost:20128/v1",
+      aiBaseUrl: aiBaseUrlInput.value.trim() || DEFAULTS.aiBaseUrl,
       aiApiKey: aiApiKeyInput.value.trim(),
-      aiModel: aiModelInput.value.trim() || "ag/gemini-3.8-flash-high",
+      aiModel: aiModelInput.value.trim() || DEFAULTS.aiModel,
       analysisMode: analysisModeSelect.value,
       sendSlideToTele: sendSlideToTeleSelect.value === "true",
-      autoSummaryInterval: parseInt(autoSummaryIntervalInput.value, 10) || 60
+      autoSummaryInterval: parseInt(autoSummaryIntervalInput.value, 10) || DEFAULTS.autoSummaryInterval
     };
 
     await chrome.storage.local.set(config);
-    saveNotice.classList.remove("hidden");
-    setTimeout(() => {
-      saveNotice.classList.add("hidden");
-    }, 2500);
+
+    if (showIndicator) {
+      saveNotice.textContent = "✓ Tersimpan otomatis di lokal";
+      saveNotice.classList.remove("hidden");
+      clearTimeout(saveDebounceTimer);
+      saveDebounceTimer = setTimeout(() => {
+        saveNotice.classList.add("hidden");
+      }, 2000);
+    }
+  }
+
+  // Trigger auto-save immediately on any input or change event
+  [
+    teleBotTokenInput,
+    teleChatIdInput,
+    aiBaseUrlInput,
+    aiApiKeyInput,
+    aiModelInput,
+    autoSummaryIntervalInput
+  ].forEach(input => {
+    input.addEventListener("input", () => {
+      clearTimeout(saveDebounceTimer);
+      saveDebounceTimer = setTimeout(() => autoSaveConfig(true), 350);
+    });
+    input.addEventListener("blur", () => autoSaveConfig(true));
+  });
+
+  [analysisModeSelect, sendSlideToTeleSelect].forEach(select => {
+    select.addEventListener("change", () => autoSaveConfig(true));
+  });
+
+  // Explicit Save button submit
+  settingsForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await autoSaveConfig(true);
   });
 
   // Test Telegram Notification

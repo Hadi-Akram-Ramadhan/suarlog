@@ -40,10 +40,43 @@ chrome.runtime.onInstalled.addListener(async () => {
   });
 });
 
-// Helper: Resolve Token (Custom user token, environment-provided, or bridge)
+// Helper: Resolve Token (Custom user token, config.local.json seed, or storage)
 async function getEffectiveTelegramToken() {
   const data = await chrome.storage.local.get("teleBotToken");
-  return data.teleBotToken ? data.teleBotToken.trim() : "";
+  if (data.teleBotToken && data.teleBotToken.trim()) {
+    return data.teleBotToken.trim();
+  }
+  try {
+    const res = await fetch(chrome.runtime.getURL("config.local.json"));
+    if (res.ok) {
+      const cfg = await res.json();
+      if (cfg.teleBotToken) return cfg.teleBotToken.trim();
+    }
+  } catch (_) {}
+  return "";
+}
+
+// Offscreen Document Lifecycle for Audio Loopback & Recording
+let creatingOffscreen = null;
+async function setupOffscreenDocument(path = "offscreen.html") {
+  const offscreenUrl = chrome.runtime.getURL(path);
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [offscreenUrl]
+  });
+  if (existingContexts && existingContexts.length > 0) return;
+
+  if (creatingOffscreen) {
+    await creatingOffscreen;
+  } else {
+    creatingOffscreen = chrome.offscreen.createDocument({
+      url: path,
+      reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
+      justification: "Record tab audio for AI meeting analysis without muting user headset"
+    });
+    await creatingOffscreen;
+    creatingOffscreen = null;
+  }
 }
 
 // Helper: Telegram API Dispatches
@@ -150,21 +183,22 @@ function isSlideDifferent(dataUrlA, dataUrlB) {
 }
 
 // Capture Tab Routine
-async function performCapture(tabId, isManual = false) {
+async function performCapture(tabId, isManual = false, forcedDataUrl = null) {
   try {
-    // Ensure capture targets specific window/tab to prevent leaking unrelated foreground windows
-    let targetWindowId = null;
-    if (tabId) {
-      const targetTab = await chrome.tabs.get(tabId).catch(() => null);
-      if (targetTab) targetWindowId = targetTab.windowId;
+    let dataUrl = forcedDataUrl;
+    if (!dataUrl) {
+      let targetWindowId = null;
+      if (tabId) {
+        const targetTab = await chrome.tabs.get(tabId).catch(() => null);
+        if (targetTab) targetWindowId = targetTab.windowId;
+      }
+      dataUrl = await chrome.tabs.captureVisibleTab(targetWindowId, { format: "jpeg", quality: 85 });
     }
-    const dataUrl = await chrome.tabs.captureVisibleTab(targetWindowId, { format: "jpeg", quality: 85 });
     if (!dataUrl) return null;
 
-    const { screenshots, sendSlideToTele, teleBotToken, teleChatId, analysisMode } = await chrome.storage.local.get([
+    const { screenshots, sendSlideToTele, teleChatId, analysisMode } = await chrome.storage.local.get([
       "screenshots",
       "sendSlideToTele",
-      "teleBotToken",
       "teleChatId",
       "analysisMode"
     ]);
@@ -172,7 +206,7 @@ async function performCapture(tabId, isManual = false) {
     const shotList = screenshots || [];
     const isDiff = shotList.length === 0 || isSlideDifferent(dataUrl, shotList[shotList.length - 1].dataUrl);
 
-    if (isDiff || isManual) {
+    if (isDiff || isManual || forcedDataUrl) {
       const slideNum = shotList.length + 1;
       const newShot = {
         index: slideNum,
@@ -182,31 +216,31 @@ async function performCapture(tabId, isManual = false) {
       shotList.push(newShot);
       await chrome.storage.local.set({ screenshots: shotList });
 
-      // Analyze this slide with AI
+      // Analyze this slide visual with AI
       const promptMode = analysisMode === "concise"
-        ? "Ringkas slide ini dalam 2 poin inti penting saja."
+        ? "Ringkas slide ini dalam 2-3 poin inti penting saja."
         : analysisMode === "academic"
-        ? "Analisis slide ini dalam struktur materi kuliah/bootcamp, rumus/poin teknis, dan catatan penting."
-        : "Analisis slide presentasi ini secara DETAIL dan LENGKAP. Jabarkan poin penting, data/angka, dan takeaways.";
+        ? "Analisis materi kuliah/bootcamp pada slide ini: rumus, konsep teknis, diagram, dan poin penting."
+        : "Analisis slide presentasi ini secara DETAIL dan LENGKAP. Jabarkan judul, poin materi, data/angka, dan takeaways visual.";
 
       const aiMessages = [
         {
           role: "user",
           content: [
-            { type: "text", text: `${promptMode}\nGunakan bahasa Indonesia yang jelas dan profesional.` },
+            { type: "text", text: `${promptMode}\nGunakan bahasa Indonesia yang jelas, runut, dan profesional.` },
             { type: "image_url", image_url: { url: dataUrl } }
           ]
         }
       ];
 
       try {
-        const explanation = await callAICompletion(aiMessages, 800);
+        const explanation = await callAICompletion(aiMessages, 1000);
 
         // Store into transcripts feed
         const { transcripts } = await chrome.storage.local.get("transcripts");
         const tList = transcripts || [];
         tList.push({
-          speaker: `Slide #${slideNum}`,
+          speaker: `Slide #${slideNum} (Visual)`,
           timestamp: Date.now(),
           text: explanation
         });
@@ -332,6 +366,19 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       // Notify content script
       chrome.tabs.sendMessage(activeTabId, { action: "START_OBSERVING" }).catch(() => {});
 
+      // Setup audio loopback capture via offscreen document so user headset is NOT muted
+      try {
+        const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: activeTabId });
+        await setupOffscreenDocument("offscreen.html");
+        chrome.runtime.sendMessage({
+          target: "offscreen",
+          action: "START_AUDIO",
+          streamId: streamId
+        }).catch(err => console.warn("Could not start offscreen audio:", err));
+      } catch (audioErr) {
+        console.warn("[Suarlog AI] Could not initialize tab audio capture:", audioErr);
+      }
+
       // Initial capture
       await performCapture(activeTabId, true);
 
@@ -353,7 +400,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         sendTelegramMessage(
           effectiveToken,
           teleChatId,
-          `🚀 *Monitor Meeting Dimulai*\n• Tab: ${tab.title || "Meeting"}\n• Interval Cek: ${intervalSec} detik\nSuarlog AI aktif memantau slide & transkrip.`
+          `🚀 *Monitor Meeting Dimulai*\n• Tab: ${tab.title || "Meeting"}\n• Interval Cek: ${intervalSec} detik\nSuarlog AI aktif memantau audio tab, slide & transkrip.`
         ).then(r => {
           if (!r.success) console.warn("Telegram start notification failed:", r.error);
         }).catch(() => {});
@@ -375,6 +422,11 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         chrome.tabs.sendMessage(activeTabId, { action: "STOP_OBSERVING" }).catch(() => {});
         activeTabId = null;
       }
+
+      // Stop audio recording and close offscreen document cleanly
+      chrome.runtime.sendMessage({ target: "offscreen", action: "STOP_AUDIO" }).catch(() => {});
+      chrome.offscreen.closeDocument().catch(() => {});
+
       await chrome.storage.local.set({ isRecording: false });
 
       // Send finish notification to Telegram
@@ -435,13 +487,84 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       const { transcripts } = await chrome.storage.local.get("transcripts");
       const tList = transcripts || [];
       tList.push({
-        speaker: "Percakapan Meeting",
+        speaker: req.speaker || "Percakapan Meeting",
         timestamp: req.timestamp || Date.now(),
         text: req.text
       });
       // Cap at 200 items in storage
       if (tList.length > 200) tList.shift();
       await chrome.storage.local.set({ transcripts: tList });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
+
+  // 7. Inbound Continuous Speech Audio Chunk from Offscreen Worker
+  if (req.action === "NEW_AUDIO_SPEECH_CHUNK") {
+    (async () => {
+      const { isRecording, analysisMode } = await chrome.storage.local.get(["isRecording", "analysisMode"]);
+      if (!isRecording || !req.wavBase64) return;
+
+      console.log(`[Suarlog AI] Transcribing speech chunk (${req.durationSec.toFixed(1)}s)...`);
+
+      const promptMode = analysisMode === "concise"
+        ? "Transkripsikan intisari percakapan ini secara ringkas, padat, dan jelas per pembicara."
+        : "Kamu adalah transcriber audio meeting profesional. Transkripsikan seluruh percakapan audio ini secara LENGKAP, DETAIL, dan VERBATIM (KATA PER KATA APA ADANYA). Format rapi dengan label pembicara (misal: Pembicara 1, Pembicara 2, atau nama jika terdengar). DILARANG MENYINGKAT atau MERANGKUM perkataan pembicara. Catat setiap istilah teknis, pertanyaan, dan instruksi.";
+
+      const aiMessages = [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `${promptMode}\nGunakan bahasa Indonesia yang jelas dan profesional.` },
+            {
+              type: "input_audio",
+              input_audio: {
+                data: req.wavBase64,
+                format: "wav"
+              }
+            }
+          ]
+        }
+      ];
+
+      try {
+        const verbatimText = await callAICompletion(aiMessages, 1500);
+        if (verbatimText && verbatimText.trim().length > 3) {
+          const { transcripts, teleChatId } = await chrome.storage.local.get(["transcripts", "teleChatId"]);
+          const tList = transcripts || [];
+          tList.push({
+            speaker: "Percakapan Audio Live",
+            timestamp: req.timestamp || Date.now(),
+            text: verbatimText.trim()
+          });
+          if (tList.length > 300) tList.shift();
+          await chrome.storage.local.set({ transcripts: tList });
+
+          // Send to Telegram
+          const effectiveToken = await getEffectiveTelegramToken();
+          if (effectiveToken && teleChatId) {
+            await sendTelegramMessage(
+              effectiveToken,
+              teleChatId,
+              `🎙️ *Transkrip Audio Live*:\n\n${verbatimText.trim()}`
+            );
+          }
+        }
+      } catch (err) {
+        console.error("[Suarlog AI] Error transcribing speech chunk:", err);
+      }
+    })();
+    return true;
+  }
+
+  // 8. Auto Slide Transition Notification from Content Script
+  if (req.action === "AUTO_SLIDE_TRANSITION") {
+    (async () => {
+      const { isRecording } = await chrome.storage.local.get("isRecording");
+      if (!isRecording) return;
+      if (sender.tab && activeTabId && sender.tab.id !== activeTabId) return;
+      console.log("[Suarlog AI] Auto slide transition received, triggering snapshot analysis...");
+      await performCapture(activeTabId, true, req.dataUrl);
       sendResponse({ success: true });
     })();
     return true;

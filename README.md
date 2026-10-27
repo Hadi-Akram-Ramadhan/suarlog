@@ -1,26 +1,30 @@
-# Suarlog AI - Chrome Extension (Manifest V3)
+# Suarlog AI - Chrome Extension (v1.1.0)
 
-Ekstensi Chrome cerdas untuk monitoring live meeting (Google Meet, Zoom Web, Microsoft Teams), menangkap transkrip otomatis secara real-time, pratinjau dan riwayat tangkapan layar slide, analisis AI mendalam, serta integrasi langsung ke Bot Telegram pribadi Anda.
+Ekstensi Chrome cerdas untuk monitoring live meeting (Google Meet, Zoom Web, Microsoft Teams), menangkap transkrip otomatis secara real-time dari audio tab langsung (tanpa mematikan suara headset/TWS), deteksi otomatis perubahan slide presentasi, analisis AI mendalam, serta integrasi langsung ke Bot Telegram pribadi Anda.
 
 ---
 
 ## Fitur Utama
 
-1. **Live Caption & Transkrip Real-Time:**
-   - Mendeteksi teks percakapan dan closed captions secara langsung dari elemen Web meeting.
-   - Menyimpan seluruh log verbatim secara urut waktu.
+1. **Continuous Speech Audio Transcription (Real-Time):**
+   - Merekam audio tab meeting langsung via Chrome Offscreen Document.
+   - Dilengkapi **Loopback Playback**: suara meeting tetap terdengar 100% normal dan jernih di earphone/headset/TWS Anda (zero muting).
+   - VAD (Voice Activity Detection): Kapan pun ada yang berbicara, rekaman audio otomatis diproses dan ditranskripsikan kata per kata (verbatim) tanpa bergantung pada perpindahan slide.
 
-2. **Daftar Tangkapan Layar (Gallery):**
-   - Menangkap layar tab meeting (`captureVisibleTab`) secara berkala atau instan saat ada pergantian materi.
-   - Galeri thumbnail dengan timestamp untuk setiap slide yang dipresentasikan.
+2. **Deteksi Otomatis Perubahan Slide (Real-Time Visual Detector):**
+   - Mendeteksi pergantian slide secara otomatis pada tile presentasi Google Meet / Zoom / Teams setiap 2 detik.
+   - Tidak perlu menunggu timer atau klik manual; saat presenter berganti slide, frame beresolusi tinggi langsung tertangkap dan dianalisis.
 
-3. **Sinkronisasi Telegram Bot:**
+3. **Closed Captions & Subtitle Fallback:**
+   - Mendeteksi teks percakapan dan closed captions secara langsung dari elemen web meeting jika fitur CC aktif.
+
+4. **Sinkronisasi Telegram Bot & Local Storage Persistence:**
+   - Pengaturan (Chat ID, Bot Token, Endpoint AI) otomatis tersimpan permanen di penyimpanan lokal browser.
    - Notifikasi mulai, update slide berkala, transkrip, dan analisis meeting terkirim otomatis ke Chat ID Telegram Anda.
    - Mendukung kirim foto slide beserta teks penjelasan lengkap.
-   - Tombol uji coba koneksi bot Telegram langsung dari tab Pengaturan.
 
-4. **Kustomisasi Penuh Endpoint AI & Model:**
-   - Mendukung endpoint kustom (OpenAI kompatibel, seperti `http://localhost:20128/v1` 9Router, OpenAI, Groq, OpenRouter).
+5. **Kustomisasi Penuh Endpoint AI & Model:**
+   - Mendukung endpoint kustom (OpenAI-compatible, seperti `http://localhost:20128/v1` 9Router, OpenAI, Groq, OpenRouter).
    - Pengaturan API Key dan pilihan Model AI (misalnya `ag/gemini-3.8-flash-high`, `openai/gpt-4o`, dll).
 
 5. **Mode Analisis Fleksibel:**
